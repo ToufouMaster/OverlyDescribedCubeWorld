@@ -106,8 +106,9 @@ std::map<int, const wchar_t*> object_descriptions{
 	{76, L"Interactive object this text must not appear"}, // WorkBench
 	{77, L"Interactive object this text must not appear"}, // CustomizationBench
 };
-const wchar_t* default_description = L"There is nothing special here.";
+const wchar_t* default_description = L"There is nothing special";
 
+// Todo: Use current string (eax) as a parameter in On_Object_Interact
 const wchar_t* On_Object_Interact(int* object_type_ptr) {
 	int id = *object_type_ptr;
 	auto search = object_descriptions.find(id);
@@ -117,10 +118,14 @@ const wchar_t* On_Object_Interact(int* object_type_ptr) {
 	return default_description;
 }
 
-void __declspec(naked) On_Object_Interact_Handler() {
-	// STORE REG TO OLDREG
-	//Store variables
+const wchar_t* On_Object_Interact_Backup(int* object_type_ptr, const wchar_t* text) {
+	int id = *object_type_ptr;
+	if (id != 21 && id != 22 && id != 23)
+		return On_Object_Interact(object_type_ptr);
+	return text;
+}
 
+void __declspec(naked) On_Object_Interact_Handler() {
 	__asm {
 
 		PUSH_ALL
@@ -142,15 +147,51 @@ void __declspec(naked) On_Object_Interact_Handler() {
 	}
 }
 
+void __declspec(naked) On_Object_Interact_Handler_Backup() {
+
+	__asm {
+
+		PUSH_ALL
+
+		mov ebx, [ecx - 0x4]
+		mov eax, [ebp + 0x08]
+		push ebx
+		push eax
+
+		call On_Object_Interact_Backup
+
+		mov[ebp+0x08], eax
+		pop eax
+		pop ebx
+
+		POP_ALL
+
+		add esp, 4
+		// Original Code
+		push[ebp + 0x08]
+		mov dword ptr[ebp - 0x04], 0x00000000
+		jmp[OnObjectInteractBackAddr]
+	}
+}
+
 void setup_On_Object_Interact(int offset) {
 	int hookLength = 12;
 	auto imageBase = (DWORD)GetModuleHandleA(NULL);
 	DWORD hookAdress = imageBase + offset;
 	DWORD curProtection;
 	DWORD temp;
-	OnObjectInteractBackAddr = hookAdress + hookLength;
+	OnObjectInteractBackAddr = hookAdress + 5;
 
 	void* toHook = (void*)hookAdress;
+	void* toHookCompatibility = (void*)(hookAdress-2);
+	boolean alreadyHooked = *(BYTE*)toHookCompatibility == 0xE9;
+	if (alreadyHooked) { // an other mod already hooked itself (probably TravelMod)
+		offset += 0x03;
+		hookAdress = imageBase + offset;
+		toHook = (void*)hookAdress;
+		hookLength = 9;
+		OnObjectInteractBackAddr = hookAdress + 5;
+	}
 
 	if (hookLength < 5) {
 		return;
@@ -159,8 +200,13 @@ void setup_On_Object_Interact(int offset) {
 	VirtualProtect(toHook, hookLength, PAGE_EXECUTE_READWRITE, &curProtection);
 
 	memset(toHook, 0x90, hookLength);
-
-	DWORD relativeAddress = ((DWORD)On_Object_Interact_Handler - (DWORD)toHook) - 5;
+	DWORD relativeAddress;
+	if (alreadyHooked) {
+		relativeAddress = ((DWORD)On_Object_Interact_Handler_Backup - (DWORD)toHook) - 5;
+	}
+	else {
+		relativeAddress = ((DWORD)On_Object_Interact_Handler - (DWORD)toHook) - 5;
+	}
 
 	*(BYTE*)toHook = 0xE9;
 	*(DWORD*)((DWORD)toHook + 1) = relativeAddress;
